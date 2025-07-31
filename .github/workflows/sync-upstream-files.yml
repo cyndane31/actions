@@ -1,0 +1,68 @@
+name: Sync selected files from upstream repo
+
+on:
+  workflow_call:
+    inputs:
+      upstream_repo:
+        required: true
+        type: string
+        description: "Upstream repo in owner/repo format"
+      upstream_branch:
+        required: false
+        type: string
+        default: "main"
+        description: "Branch to fetch files from (default: main)"
+      file_map:
+        required: true
+        type: string
+        description: "Multi-line string: homelab-as-code-path:REMOTE/PATH (one per line)"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+
+      - name: Fetch files from upstream
+        run: |
+          mkdir -p upstream-files
+          while IFS= read -r line; do
+            DST=$(echo "$line" | cut -d: -f1)
+            SRC=$(echo "$line" | cut -d: -f2)
+            mkdir -p "$(dirname "$DST")"
+            curl -sSfL -o "upstream-files/$SRC" "https://raw.githubusercontent.com/${{ inputs.upstream_repo }}/${{ inputs.upstream_branch }}/$SRC"
+          done <<< "${{ inputs.file_map }}"
+
+      - name: Compare and update files
+        run: |
+          updated=0
+          while IFS= read -r line; do
+            DST=$(echo "$line" | cut -d: -f1)
+            SRC=$(echo "$line" | cut -d: -f2)
+            if ! cmp -s "upstream-files/$SRC" "$DST"; then
+              cp "upstream-files/$SRC" "$DST"
+              updated=1
+            fi
+          done <<< "${{ inputs.file_map }}"
+          echo "updated=$updated" >> $GITHUB_ENV
+
+      - name: Commit changes if needed
+        if: env.updated == '1'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          while IFS= read -r line; do
+            DST=$(echo "$line" | cut -d: -f1)
+            git add "$DST"
+          done <<< "${{ inputs.file_map }}"
+          git commit -m "Update tracked files from ${{ inputs.upstream_repo }}:${{ inputs.upstream_branch }}"
+
+      - name: Create Pull Request
+        if: env.updated == '1'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          commit-message: "Update tracked files from ${{ inputs.upstream_repo }}:${{ inputs.upstream_branch }}"
+          title: "Sync tracked files from ${{ inputs.upstream_repo }}:${{ inputs.upstream_branch }}"
+          body: "Automated update of tracked files from ${{ inputs.upstream_repo }} branch ${{ inputs.upstream_branch }}."
+          branch: "sync-upstream-files-${{ inputs.upstream_repo }}-${{ inputs.upstream_branch }}"
